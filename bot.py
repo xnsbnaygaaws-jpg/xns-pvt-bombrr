@@ -13,24 +13,70 @@ from telegram.ext import (
 from telegram.constants import ChatMemberStatus
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = "9076582647:AAHE7i7I1gRykaM5OO5mfUdzjQB4zL6ziek"  # Replace after revoking!
+BOT_TOKEN = "9076582647:AAHE7i7I1gRykaM5OO5mfUdzjQB4zL6ziek"  # Apna revoked/new token dalein
 OWNER_ID = 8690715024
 OWNER_USERNAME = "shopoflie"
-DATA_FILE = "channels.json"
 
-# Conversation states for adding a channel
-WAITING_FOR_CHANNEL_ID, WAITING_FOR_CHANNEL_LINK = range(2)
+CHANNELS_FILE = "channels.json"
+ADMINS_FILE = "admins.json"
+USERS_FILE = "users.json"  # Username se Chat ID dhundhne ke liye
+
+# Conversation states
+(
+    WAITING_FOR_CHANNEL_ID,
+    WAITING_FOR_CHANNEL_LINK,
+    WAITING_FOR_ADMIN_INPUT,
+) = range(3)
+
 
 # ================= DATABASE HELPERS =================
-def load_channels():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with open(DATA_FILE, "r") as f:
+def load_json(filename, default):
+    if not os.path.exists(filename):
+        return default
+    with open(filename, "r") as f:
         return json.load(f)
 
+
+def save_json(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+def load_channels():
+    return load_json(CHANNELS_FILE, [])
+
+
 def save_channels(channels):
-    with open(DATA_FILE, "w") as f:
-        json.dump(channels, f, indent=4)
+    save_json(CHANNELS_FILE, channels)
+
+
+def load_admins():
+    return load_json(ADMINS_FILE, [])
+
+
+def save_admins(admins):
+    save_json(ADMINS_FILE, admins)
+
+
+def register_user(user):
+    """User ka username aur ID save karta hai taaki @username se admin add ho sake."""
+    if not user:
+        return
+    users = load_json(USERS_FILE, {})
+    users[str(user.id)] = {
+        "id": user.id,
+        "username": user.username.lower() if user.username else None,
+        "name": user.first_name,
+    }
+    save_json(USERS_FILE, users)
+
+
+def is_admin(user_id: int) -> bool:
+    if user_id == OWNER_ID:
+        return True
+    admins = load_admins()
+    return any(a["id"] == user_id for a in admins)
+
 
 # ================= FORCE JOIN CHECKER =================
 async def get_unjoined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -46,10 +92,10 @@ async def get_unjoined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE
             ]:
                 unjoined.append(ch)
         except Exception as e:
-            # If bot is not admin in the channel or ID is invalid, print error in console
             print(f"Error checking channel {ch['id']}: {e}")
             unjoined.append(ch)
     return unjoined
+
 
 def build_force_join_markup(unjoined_channels):
     keyboard = []
@@ -58,24 +104,37 @@ def build_force_join_markup(unjoined_channels):
     keyboard.append([InlineKeyboardButton("✅ Joined / Verify", callback_data="check_join")])
     return InlineKeyboardMarkup(keyboard)
 
+
+def build_admin_panel_markup(user_id: int):
+    keyboard = [
+        [InlineKeyboardButton("📢 Force Join Settings", callback_data="force_join_menu")],
+    ]
+    # Admins manage karne ka button sirf Main Owner ko dikhega
+    if user_id == OWNER_ID:
+        keyboard.append([InlineKeyboardButton("👥 Admins", callback_data="admins_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+
 # ================= USER COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    unjoined = await get_unjoined_channels(user.id, context)
+    register_user(user)
 
-    if unjoined:
-        await update.message.reply_text(
-            "⚠️ **Access Denied!**\n\n"
-            "Bot use karne ke liye pehle niche diye gaye sabhi channels join karein.\n"
-            "Join karne ke baad **✅ Joined / Verify** par click karein:",
-            reply_markup=build_force_join_markup(unjoined),
-            parse_mode="Markdown",
-        )
-        return
+    # Admins aur Owner ko Force Join skip karwane ke liye niche check lagaya hai
+    if not is_admin(user.id):
+        unjoined = await get_unjoined_channels(user.id, context)
+        if unjoined:
+            await update.message.reply_text(
+                "⚠️ **Access Denied!**\n\n"
+                "Bot use karne ke liye pehle niche diye gaye sabhi channels join karein.\n"
+                "Join karne ke baad **✅ Joined / Verify** par click karein:",
+                reply_markup=build_force_join_markup(unjoined),
+                parse_mode="Markdown",
+            )
+            return
 
-    # Welcome message after joining all channels
     keyboard = []
-    if user.id == OWNER_ID:
+    if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
 
     await update.message.reply_text(
@@ -84,22 +143,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
+
 async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
-    unjoined = await get_unjoined_channels(user.id, context)
+    register_user(user)
 
+    unjoined = await get_unjoined_channels(user.id, context)
     if unjoined:
         await query.answer("❌ Aapne abhi tak saare channels join nahi kiye hain!", show_alert=True)
         try:
             await query.edit_message_reply_markup(reply_markup=build_force_join_markup(unjoined))
         except Exception:
-            pass  # Ignore error if message markup is identical
+            pass
         return
 
     await query.answer("✅ Verification Successful!", show_alert=False)
     keyboard = []
-    if user.id == OWNER_ID:
+    if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
 
     await query.edit_message_text(
@@ -108,40 +169,199 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode="Markdown",
     )
 
+
 # ================= ADMIN PANEL =================
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ Yeh command sirf bot owner ke liye hai.")
+    user = update.effective_user
+    register_user(user)
+
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Yeh command sirf Admins ke liye hai.")
         return
 
-    keyboard = [
-        [InlineKeyboardButton("📢 Force Join Settings", callback_data="force_join_menu")]
-    ]
+    role = "Owner" if user.id == OWNER_ID else "Admin"
     await update.message.reply_text(
-        f"🛠 **Admin Panel**\nOwner: @{OWNER_USERNAME}",
+        f"🛠 **Admin Panel**\nRole: **{role}** | Owner: @{OWNER_USERNAME}",
+        reply_markup=build_admin_panel_markup(user.id),
+        parse_mode="Markdown",
+    )
+
+
+async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    if not is_admin(user.id):
+        await query.answer("⛔ Unauthorized!", show_alert=True)
+        return
+
+    await query.answer()
+    role = "Owner" if user.id == OWNER_ID else "Admin"
+    await query.edit_message_text(
+        f"🛠 **Admin Panel**\nRole: **{role}** | Owner: @{OWNER_USERNAME}",
+        reply_markup=build_admin_panel_markup(user.id),
+        parse_mode="Markdown",
+    )
+
+
+# ================= ADMINS MANAGEMENT (OWNER ONLY) =================
+async def admins_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        await query.answer("⛔ Sirf Owner hi admins manage kar sakta hai!", show_alert=True)
+        return
+
+    await query.answer()
+    admins = load_admins()
+    text = f"👥 **Bot Admins Management**\n\n👑 **Owner:** `{OWNER_ID}` (@{OWNER_USERNAME})\n\n"
+
+    if not admins:
+        text += "Abhi koi extra admin add nahi hai."
+    else:
+        text += f"**Added Admins ({len(admins)}):**\n"
+        for idx, adm in enumerate(admins, start=1):
+            uname = f"(@{adm['username']})" if adm.get("username") else ""
+            text += f"{idx}. `{adm['id']}` {uname}\n"
+
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_btn")],
+        [InlineKeyboardButton("🗑 Remove Admin", callback_data="remove_admin_list")],
+        [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")],
+    ]
+    await query.edit_message_text(
+        text,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown",
     )
 
-async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        await query.answer("⛔ Unauthorized!", show_alert=True)
+        return ConversationHandler.END
+
+    await query.answer()
+    await query.edit_message_text(
+        "👤 **Naye Admin ka Chat ID ya `@username` bhejein:**\n\n"
+        "• Example ID: `123456789`\n"
+        "• Example Username: `@username`\n\n"
+        "⚠️ *Note: Username se add karne ke liye zaroori hai ki us user ne bot ko pehle `/start` kiya ho.*\n"
+        "Cancel karne ke liye `/cancel` bhejein.",
+        parse_mode="Markdown",
+    )
+    return WAITING_FOR_ADMIN_INPUT
+
+
+async def receive_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+
+    raw_input = update.message.text.strip()
+    target_id = None
+    target_username = None
+
+    # Case 1: Numeric Chat ID
+    if raw_input.lstrip("-").isdigit():
+        target_id = int(raw_input)
+        try:
+            chat = await context.bot.get_chat(target_id)
+            target_username = chat.username
+        except Exception:
+            pass
+
+    # Case 2: @username
+    elif raw_input.startswith("@") or not raw_input.isdigit():
+        clean_uname = raw_input.lstrip("@").lower()
+        users = load_json(USERS_FILE, {})
+        for uid_str, udata in users.items():
+            if udata.get("username") == clean_uname:
+                target_id = udata["id"]
+                target_username = clean_uname
+                break
+
+        if not target_id:
+            await update.message.reply_text(
+                f"❌ `@{clean_uname}` nahi mila!\n\n"
+                "Us user ne abhi tak bot ko `/start` nahi kiya hai. "
+                "Ya toh unhe pehle bot start karne ko bolein, ya unka **numeric Chat ID** bhejein (ya `/cancel` karein):",
+                parse_mode="Markdown",
+            )
+            return WAITING_FOR_ADMIN_INPUT
+
+    if target_id == OWNER_ID:
+        await update.message.reply_text("⚠️ Aap pehle se hi Bot Owner hain!")
+        return ConversationHandler.END
+
+    admins = load_admins()
+    if any(a["id"] == target_id for a in admins):
+        await update.message.reply_text("⚠️ Yeh user pehle se Admin hai!")
+        return ConversationHandler.END
+
+    admins.append({"id": target_id, "username": target_username})
+    save_admins(admins)
+
+    uname_display = f" (@{target_username})" if target_username else ""
+    keyboard = [[InlineKeyboardButton("👥 Back to Admins", callback_data="admins_menu")]]
+    await update.message.reply_text(
+        f"✅ **New Admin Added!**\n\n"
+        f"• **User:** `{target_id}`{uname_display}\n"
+        f"Ab yeh user `/admin` command se bot manage kar sakta hai.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
+
+
+async def remove_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id != OWNER_ID:
         await query.answer("⛔ Unauthorized!", show_alert=True)
         return
 
+    admins = load_admins()
+    if not admins:
+        await query.answer("Remove karne ke liye koi admin nahi hai!", show_alert=True)
+        return
+
     await query.answer()
-    keyboard = [
-        [InlineKeyboardButton("📢 Force Join Settings", callback_data="force_join_menu")]
-    ]
+    keyboard = []
+    for idx, adm in enumerate(admins):
+        label = f"@{adm['username']}" if adm.get("username") else str(adm["id"])
+        keyboard.append(
+            [InlineKeyboardButton(f"❌ Remove {label}", callback_data=f"del_adm_{idx}")]
+        )
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admins_menu")])
+
     await query.edit_message_text(
-        f"🛠 **Admin Panel**\nOwner: @{OWNER_USERNAME}",
+        "🗑 **Jis Admin ko remove karna hai us par click karein:**",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown",
     )
 
-async def force_join_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def delete_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id != OWNER_ID:
+        await query.answer("⛔ Unauthorized!", show_alert=True)
+        return
+
+    idx = int(query.data.split("_")[-1])
+    admins = load_admins()
+
+    if 0 <= idx < len(admins):
+        removed = admins.pop(idx)
+        save_admins(admins)
+        await query.answer(f"✅ Removed Admin {removed['id']}", show_alert=True)
+    else:
+        await query.answer("⚠️ Admin nahi mila!", show_alert=True)
+
+    await admins_menu(update, context)
+
+
+# ================= FORCE JOIN MANAGEMENT =================
+async def force_join_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
         await query.answer("⛔ Unauthorized!", show_alert=True)
         return
 
@@ -167,10 +387,10 @@ async def force_join_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True,
     )
 
-# ================= ADD CHANNEL FLOW =================
+
 async def start_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.from_user.id != OWNER_ID:
+    if not is_admin(query.from_user.id):
         await query.answer("⛔ Unauthorized!", show_alert=True)
         return ConversationHandler.END
 
@@ -184,8 +404,9 @@ async def start_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return WAITING_FOR_CHANNEL_ID
 
+
 async def receive_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(update.effective_user.id):
         return ConversationHandler.END
 
     chat_id_text = update.message.text.strip()
@@ -206,8 +427,9 @@ async def receive_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return WAITING_FOR_CHANNEL_LINK
 
+
 async def receive_channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(update.effective_user.id):
         return ConversationHandler.END
 
     link = update.message.text.strip()
@@ -220,7 +442,6 @@ async def receive_channel_link(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = context.user_data.get("new_channel_id")
     channels = load_channels()
 
-    # Check if already exists
     if any(ch["id"] == chat_id for ch in channels):
         await update.message.reply_text("⚠️ Yeh channel pehle se Force Join list mein added hai!")
         return ConversationHandler.END
@@ -239,23 +460,24 @@ async def receive_channel_link(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
+
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Process cancel kar diya gaya hai.")
     return ConversationHandler.END
 
-# ================= REMOVE CHANNEL FLOW =================
+
 async def remove_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.from_user.id != OWNER_ID:
+    if not is_admin(query.from_user.id):
         await query.answer("⛔ Unauthorized!", show_alert=True)
         return
 
-    await query.answer()
     channels = load_channels()
     if not channels:
         await query.answer("Remove karne ke liye koi channel nahi hai!", show_alert=True)
         return
 
+    await query.answer()
     keyboard = []
     for idx, ch in enumerate(channels):
         keyboard.append(
@@ -269,9 +491,10 @@ async def remove_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown",
     )
 
+
 async def delete_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.from_user.id != OWNER_ID:
+    if not is_admin(query.from_user.id):
         await query.answer("⛔ Unauthorized!", show_alert=True)
         return
 
@@ -285,14 +508,14 @@ async def delete_channel_callback(update: Update, context: ContextTypes.DEFAULT_
     else:
         await query.answer("⚠️ Channel nahi mila!", show_alert=True)
 
-    # Refresh the Force Join menu
     await force_join_menu(update, context)
+
 
 # ================= MAIN RUNNER =================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation handler for adding a force join channel
+    # Conversation handler for Force Join Channels
     add_channel_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_channel, pattern="^add_fj_channel$")],
         states={
@@ -306,19 +529,40 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
 
+    # Conversation handler for Adding Admins
+    add_admin_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_add_admin, pattern="^add_admin_btn$")],
+        states={
+            WAITING_FOR_ADMIN_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_admin_input)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(add_channel_conv)
+    app.add_handler(add_admin_conv)
 
-    # Callback query handlers
+    # Callback handlers
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern="^check_join$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
+
+    # Force join callbacks
     app.add_handler(CallbackQueryHandler(force_join_menu, pattern="^force_join_menu$"))
     app.add_handler(CallbackQueryHandler(remove_channel_list, pattern="^remove_fj_list$"))
     app.add_handler(CallbackQueryHandler(delete_channel_callback, pattern="^del_ch_"))
 
+    # Admin management callbacks
+    app.add_handler(CallbackQueryHandler(admins_menu, pattern="^admins_menu$"))
+    app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^remove_admin_list$"))
+    app.add_handler(CallbackQueryHandler(delete_admin_callback, pattern="^del_adm_"))
+
     print("Bot is running...")
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
+    
