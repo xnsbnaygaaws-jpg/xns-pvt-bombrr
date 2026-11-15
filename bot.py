@@ -13,13 +13,13 @@ from telegram.ext import (
 from telegram.constants import ChatMemberStatus
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = "9076582647:AAHE7i7I1gRykaM5OO5mfUdzjQB4zL6ziek"  # Apna revoked/new token dalein
+BOT_TOKEN = "9076582647:AAFvcBQQSvFHxsFggkn8Chgji9qRiath_a4"
 OWNER_ID = 8690715024
 OWNER_USERNAME = "shopoflie"
 
 CHANNELS_FILE = "channels.json"
 ADMINS_FILE = "admins.json"
-USERS_FILE = "users.json"  # Username se Chat ID dhundhne ke liye
+USERS_FILE = "users.json"
 
 # Conversation states
 (
@@ -59,7 +59,6 @@ def save_admins(admins):
 
 
 def register_user(user):
-    """User ka username aur ID save karta hai taaki @username se admin add ho sake."""
     if not user:
         return
     users = load_json(USERS_FILE, {})
@@ -107,9 +106,8 @@ def build_force_join_markup(unjoined_channels):
 
 def build_admin_panel_markup(user_id: int):
     keyboard = [
-        [InlineKeyboardButton("📢 Force Join Settings", callback_data="force_join_menu")],
+        [InlineKeyboardButton("📢 Force Join", callback_data="force_join_menu")],
     ]
-    # Admins manage karne ka button sirf Main Owner ko dikhega
     if user_id == OWNER_ID:
         keyboard.append([InlineKeyboardButton("👥 Admins", callback_data="admins_menu")])
     return InlineKeyboardMarkup(keyboard)
@@ -120,7 +118,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user)
 
-    # Admins aur Owner ko Force Join skip karwane ke liye niche check lagaya hai
     if not is_admin(user.id):
         unjoined = await get_unjoined_channels(user.id, context)
         if unjoined:
@@ -131,7 +128,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=build_force_join_markup(unjoined),
                 parse_mode="Markdown",
             )
-            return
+            return ConversationHandler.END
 
     keyboard = []
     if is_admin(user.id):
@@ -142,6 +139,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
         parse_mode="Markdown",
     )
+    return ConversationHandler.END
 
 
 async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,7 +175,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Yeh command sirf Admins ke liye hai.")
-        return
+        return ConversationHandler.END
 
     role = "Owner" if user.id == OWNER_ID else "Admin"
     await update.message.reply_text(
@@ -185,6 +183,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=build_admin_panel_markup(user.id),
         parse_mode="Markdown",
     )
+    return ConversationHandler.END
 
 
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -260,7 +259,6 @@ async def receive_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     target_id = None
     target_username = None
 
-    # Case 1: Numeric Chat ID
     if raw_input.lstrip("-").isdigit():
         target_id = int(raw_input)
         try:
@@ -268,9 +266,7 @@ async def receive_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             target_username = chat.username
         except Exception:
             pass
-
-    # Case 2: @username
-    elif raw_input.startswith("@") or not raw_input.isdigit():
+    else:
         clean_uname = raw_input.lstrip("@").lower()
         users = load_json(USERS_FILE, {})
         for uid_str, udata in users.items():
@@ -283,7 +279,7 @@ async def receive_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(
                 f"❌ `@{clean_uname}` nahi mila!\n\n"
                 "Us user ne abhi tak bot ko `/start` nahi kiya hai. "
-                "Ya toh unhe pehle bot start karne ko bolein, ya unka **numeric Chat ID** bhejein (ya `/cancel` karein):",
+                "Unhe pehle bot start karne ko bolein, ya unka **numeric Chat ID** bhejein (ya `/cancel` karein):",
                 parse_mode="Markdown",
             )
             return WAITING_FOR_ADMIN_INPUT
@@ -515,7 +511,6 @@ async def delete_channel_callback(update: Update, context: ContextTypes.DEFAULT_
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation handler for Force Join Channels
     add_channel_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_channel, pattern="^add_fj_channel$")],
         states={
@@ -526,10 +521,13 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_link)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            CommandHandler("start", start),
+            CommandHandler("admin", admin_command),
+        ],
     )
 
-    # Conversation handler for Adding Admins
     add_admin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_admin, pattern="^add_admin_btn$")],
         states={
@@ -537,30 +535,31 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_admin_input)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            CommandHandler("start", start),
+            CommandHandler("admin", admin_command),
+        ],
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(add_channel_conv)
     app.add_handler(add_admin_conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_command))
 
-    # Callback handlers
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern="^check_join$"))
     app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
 
-    # Force join callbacks
     app.add_handler(CallbackQueryHandler(force_join_menu, pattern="^force_join_menu$"))
     app.add_handler(CallbackQueryHandler(remove_channel_list, pattern="^remove_fj_list$"))
     app.add_handler(CallbackQueryHandler(delete_channel_callback, pattern="^del_ch_"))
 
-    # Admin management callbacks
     app.add_handler(CallbackQueryHandler(admins_menu, pattern="^admins_menu$"))
     app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^remove_admin_list$"))
     app.add_handler(CallbackQueryHandler(delete_admin_callback, pattern="^del_adm_"))
 
-    print("Bot is running...")
-    app.run_polling()
+    print("Bot is running perfectly...")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
